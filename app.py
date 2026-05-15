@@ -1,6 +1,11 @@
 import streamlit as st
 import pickle
 import numpy as np
+import plotly.graph_objects as go
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+import io
+import requests
 
 # Page config
 st.set_page_config(page_title="Multiple Disease Prediction", page_icon="🏥", layout="wide")
@@ -32,9 +37,9 @@ st.markdown("""
     border-left: 4px solid #00d2ff;
     padding: 15px; border-radius: 10px; margin-top: 15px; color: #ccc;
 }
-.metric-box {
+.chat-box {
     background: rgba(255,255,255,0.05);
-    padding: 15px; border-radius: 10px; text-align: center;
+    padding: 15px; border-radius: 10px; margin: 10px 0; color: white;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -47,6 +52,109 @@ heart_scaler = pickle.load(open('heart_scaler.pkl', 'rb'))
 parkinsons_model = pickle.load(open('parkinsons_model.pkl', 'rb'))
 parkinsons_scaler = pickle.load(open('parkinsons_scaler.pkl', 'rb'))
 
+# PDF Generator
+def generate_pdf(disease, result, confidence, tips):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(200, 750, "Multiple Disease Prediction Report")
+    c.setFont("Helvetica", 12)
+    c.drawString(50, 720, f"Disease: {disease}")
+    c.drawString(50, 700, f"Result: {result}")
+    c.drawString(50, 680, f"Confidence: {confidence}%")
+    c.drawString(50, 660, "Health Tips:")
+    y = 640
+    for tip in tips:
+        c.drawString(70, y, f"• {tip}")
+        y -= 20
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+# Gauge chart
+def create_gauge(confidence, title):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=confidence,
+        title={'text': title, 'font': {'color': 'white'}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickcolor': 'white'},
+            'bar': {'color': "#00d2ff"},
+            'steps': [
+                {'range': [0, 40], 'color': '#38ef7d'},
+                {'range': [40, 70], 'color': '#ffd700'},
+                {'range': [70, 100], 'color': '#ff416c'}
+            ],
+        },
+        number={'suffix': '%', 'font': {'color': 'white'}}
+    ))
+    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=250, margin=dict(l=20, r=20, t=50, b=20))
+    return fig
+
+# Pie chart
+def create_pie(positive, negative):
+    fig = go.Figure(go.Pie(
+        labels=['Disease Probability', 'Healthy Probability'],
+        values=[positive, negative],
+        marker=dict(colors=['#ff416c', '#38ef7d']),
+        hole=0.4
+    ))
+    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'),
+                      height=300, margin=dict(l=20, r=20, t=30, b=20))
+    return fig
+
+# Bar chart
+def create_bar_chart(values, labels, normal_values, title):
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name='Patient', x=labels, y=values, marker_color='#00d2ff'))
+    fig.add_trace(go.Bar(name='Normal', x=labels, y=normal_values, marker_color='#38ef7d'))
+    fig.update_layout(title=title, barmode='group',
+                      paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(14,17,23,0.8)',
+                      font=dict(color='white'), height=350,
+                      legend=dict(font=dict(color='white')))
+    return fig
+
+# AI Doctor Chatbot
+def get_ai_response(question, disease_context):
+    health_tips = {
+        "diabetes": {
+            "diet": "Avoid sugar, eat whole grains, vegetables and lean proteins.",
+            "exercise": "Walk 30 minutes daily, do light cardio 5 days a week.",
+            "medicine": "Consult doctor for Metformin or insulin therapy.",
+            "symptoms": "Frequent urination, excessive thirst, blurred vision are common symptoms.",
+            "default": "Monitor blood sugar daily, maintain healthy weight, avoid smoking."
+        },
+        "heart": {
+            "diet": "Eat heart healthy foods - omega 3, fruits, vegetables. Avoid oily food.",
+            "exercise": "Light walking, yoga, avoid intense exercise without doctor advice.",
+            "medicine": "Consult cardiologist for proper medication.",
+            "symptoms": "Chest pain, shortness of breath, irregular heartbeat are warning signs.",
+            "default": "Monitor blood pressure daily, avoid stress, quit smoking."
+        },
+        "parkinsons": {
+            "diet": "Mediterranean diet with antioxidants helps. Avoid constipating foods.",
+            "exercise": "Physical therapy, balance exercises, tai chi recommended.",
+            "medicine": "Levodopa is common medication - consult neurologist.",
+            "symptoms": "Tremors, stiffness, slow movement, balance problems.",
+            "default": "Regular neurologist visits, physical therapy, support group."
+        }
+    }
+
+    question_lower = question.lower()
+    tips = health_tips.get(disease_context.lower(), health_tips["diabetes"])
+
+    if any(word in question_lower for word in ["diet", "food", "eat", "khana"]):
+        return tips["diet"]
+    elif any(word in question_lower for word in ["exercise", "workout", "vyayam"]):
+        return tips["exercise"]
+    elif any(word in question_lower for word in ["medicine", "drug", "tablet", "dawai"]):
+        return tips["medicine"]
+    elif any(word in question_lower for word in ["symptom", "sign", "lakshan"]):
+        return tips["symptoms"]
+    else:
+        return tips["default"]
+
 # Title
 st.markdown('<p class="title-text">🏥 Multiple Disease Prediction System</p>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">AI Powered Early Disease Detection Using Machine Learning</p>', unsafe_allow_html=True)
@@ -54,7 +162,8 @@ st.markdown('<p class="subtitle">AI Powered Early Disease Detection Using Machin
 # Sidebar
 st.sidebar.image("https://img.icons8.com/color/96/000000/caduceus.png", width=80)
 st.sidebar.title("Navigation")
-disease = st.sidebar.selectbox("🔍 Select Disease", ["Diabetes", "Heart Disease", "Parkinsons"])
+disease = st.sidebar.selectbox("🔍 Select Disease", 
+    ["Diabetes", "Heart Disease", "Parkinsons", "BMI Calculator", "AI Doctor Chat"])
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📊 Model Accuracy")
@@ -62,11 +171,71 @@ st.sidebar.success("🩸 Diabetes: 72.08%")
 st.sidebar.warning("❤️ Heart Disease: 98.54%")
 st.sidebar.info("🧠 Parkinsons: 89.74%")
 
+# =================== BMI CALCULATOR ===================
+if disease == "BMI Calculator":
+    st.header("⚖️ BMI Calculator")
+    col1, col2 = st.columns(2)
+    with col1:
+        weight = st.number_input("Weight (kg)", 1.0, 300.0, 70.0)
+    with col2:
+        height = st.number_input("Height (cm)", 50.0, 250.0, 170.0)
+
+    if st.button("Calculate BMI", use_container_width=True):
+        bmi = round(weight / ((height/100) ** 2), 2)
+        if bmi < 18.5:
+            category, color, tip = "Underweight", "blue", "Eat more nutritious food."
+        elif bmi < 25:
+            category, color, tip = "Normal Weight", "green", "Great! Maintain your lifestyle."
+        elif bmi < 30:
+            category, color, tip = "Overweight", "orange", "Exercise regularly."
+        else:
+            category, color, tip = "Obese", "red", "Consult a doctor immediately."
+
+        st.markdown(f"### Your BMI: **{bmi}** — :{color}[{category}]")
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number", value=bmi,
+            title={'text': "BMI Meter", 'font': {'color': 'white'}},
+            gauge={'axis': {'range': [0, 50]}, 'bar': {'color': "#00d2ff"},
+                   'steps': [{'range': [0, 18.5], 'color': '#4169e1'},
+                              {'range': [18.5, 25], 'color': '#38ef7d'},
+                              {'range': [25, 30], 'color': '#ffd700'},
+                              {'range': [30, 50], 'color': '#ff416c'}]},
+            number={'font': {'color': 'white'}}
+        ))
+        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', height=300, font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown(f'<div class="tip-box">💡 {tip}</div>', unsafe_allow_html=True)
+
+# =================== AI DOCTOR CHAT ===================
+elif disease == "AI Doctor Chat":
+    st.header("🤖 AI Doctor Chatbot")
+    st.markdown("Ask health questions related to Diabetes, Heart Disease, or Parkinsons!")
+
+    disease_topic = st.selectbox("Select Disease Topic", ["Diabetes", "Heart", "Parkinsons"])
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    user_input = st.text_input("Ask your health question:", placeholder="e.g. What diet should I follow?")
+
+    if st.button("Ask AI Doctor 🤖", use_container_width=True):
+        if user_input:
+            response = get_ai_response(user_input, disease_topic)
+            st.session_state.chat_history.append(("You", user_input))
+            st.session_state.chat_history.append(("AI Doctor", response))
+
+    for sender, message in st.session_state.chat_history:
+        if sender == "You":
+            st.markdown(f'<div class="chat-box">🧑 <b>You:</b> {message}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="chat-box">🤖 <b>AI Doctor:</b> {message}</div>', unsafe_allow_html=True)
+
+    if st.button("Clear Chat"):
+        st.session_state.chat_history = []
+
 # =================== DIABETES ===================
-if disease == "Diabetes":
+elif disease == "Diabetes":
     st.header("🩸 Diabetes Prediction")
-    st.markdown("Enter patient details below to predict diabetes risk.")
-    
     col1, col2 = st.columns(2)
     with col1:
         Pregnancies = st.number_input("Pregnancies", 0, 20)
@@ -87,21 +256,38 @@ if disease == "Diabetes":
         probability = diabetes_model.predict_proba(input_scaled)[0]
         confidence = round(max(probability) * 100, 2)
 
-        if prediction[0] == 1:
-            st.markdown('<div class="result-box-danger">⚠️ HIGH RISK: The person is DIABETIC</div>', unsafe_allow_html=True)
-            st.error(f"🎯 Confidence: {confidence}%")
-            risk = "High" if confidence > 80 else "Medium"
-            st.markdown(f'<div class="tip-box">🚨 Risk Level: <b>{risk}</b><br><br>💡 Health Tips:<br>• Monitor blood sugar daily<br>• Reduce sugar intake<br>• Exercise 30 mins daily<br>• Consult a doctor immediately</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="result-box-success">✅ LOW RISK: The person is NOT Diabetic</div>', unsafe_allow_html=True)
-            st.success(f"🎯 Confidence: {confidence}%")
-            st.markdown('<div class="tip-box">✅ Risk Level: <b>Low</b><br><br>💡 Stay Healthy Tips:<br>• Maintain healthy diet<br>• Exercise regularly<br>• Regular health checkups<br>• Stay hydrated</div>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            if prediction[0] == 1:
+                result = "DIABETIC"
+                tips = ["Monitor blood sugar daily", "Reduce sugar intake",
+                        "Exercise 30 mins daily", "Consult doctor immediately"]
+                st.markdown('<div class="result-box-danger">⚠️ DIABETIC</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="tip-box">🚨 Risk: <b>High</b><br>{"<br>".join("• "+t for t in tips)}</div>',
+                            unsafe_allow_html=True)
+            else:
+                result = "NOT Diabetic"
+                tips = ["Maintain healthy diet", "Exercise regularly", "Regular checkups"]
+                st.markdown('<div class="result-box-success">✅ NOT Diabetic</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="tip-box">✅ Risk: <b>Low</b><br>{"<br>".join("• "+t for t in tips)}</div>',
+                            unsafe_allow_html=True)
+
+            pdf = generate_pdf("Diabetes", result, confidence, tips)
+            st.download_button("📄 Download Report PDF", pdf, "diabetes_report.pdf", "application/pdf")
+
+        with col2:
+            st.plotly_chart(create_gauge(confidence, "Confidence Score"), use_container_width=True)
+            st.plotly_chart(create_pie(probability[1]*100, probability[0]*100), use_container_width=True)
+
+        patient_vals = [Glucose, BloodPressure, BMI, Age]
+        normal_vals = [100, 80, 22, 30]
+        labels = ['Glucose', 'Blood Pressure', 'BMI', 'Age']
+        st.plotly_chart(create_bar_chart(patient_vals, labels, normal_vals, "Patient vs Normal Values"),
+                        use_container_width=True)
 
 # =================== HEART ===================
 elif disease == "Heart Disease":
     st.header("❤️ Heart Disease Prediction")
-    st.markdown("Enter patient details below to predict heart disease risk.")
-
     col1, col2 = st.columns(2)
     with col1:
         age = st.number_input("Age", 1, 120)
@@ -127,21 +313,38 @@ elif disease == "Heart Disease":
         probability = heart_model.predict_proba(input_scaled)[0]
         confidence = round(max(probability) * 100, 2)
 
-        if prediction[0] == 1:
-            st.markdown('<div class="result-box-danger">⚠️ HIGH RISK: The person HAS Heart Disease</div>', unsafe_allow_html=True)
-            st.error(f"🎯 Confidence: {confidence}%")
-            risk = "High" if confidence > 80 else "Medium"
-            st.markdown(f'<div class="tip-box">🚨 Risk Level: <b>{risk}</b><br><br>💡 Health Tips:<br>• Avoid oily and fatty food<br>• Exercise daily (light walking)<br>• Monitor blood pressure<br>• Consult cardiologist immediately</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="result-box-success">✅ LOW RISK: The person does NOT have Heart Disease</div>', unsafe_allow_html=True)
-            st.success(f"🎯 Confidence: {confidence}%")
-            st.markdown('<div class="tip-box">✅ Risk Level: <b>Low</b><br><br>💡 Stay Healthy Tips:<br>• Eat heart healthy foods<br>• Regular cardio exercise<br>• Avoid smoking and alcohol<br>• Annual heart checkup</div>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            if prediction[0] == 1:
+                result = "Heart Disease Detected"
+                tips = ["Avoid oily food", "Light walking daily",
+                        "Monitor blood pressure", "Consult cardiologist"]
+                st.markdown('<div class="result-box-danger">⚠️ Heart Disease Detected</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="tip-box">🚨 Risk: <b>High</b><br>{"<br>".join("• "+t for t in tips)}</div>',
+                            unsafe_allow_html=True)
+            else:
+                result = "No Heart Disease"
+                tips = ["Eat heart healthy foods", "Regular cardio", "Avoid smoking"]
+                st.markdown('<div class="result-box-success">✅ No Heart Disease</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="tip-box">✅ Risk: <b>Low</b><br>{"<br>".join("• "+t for t in tips)}</div>',
+                            unsafe_allow_html=True)
+
+            pdf = generate_pdf("Heart Disease", result, confidence, tips)
+            st.download_button("📄 Download Report PDF", pdf, "heart_report.pdf", "application/pdf")
+
+        with col2:
+            st.plotly_chart(create_gauge(confidence, "Confidence Score"), use_container_width=True)
+            st.plotly_chart(create_pie(probability[1]*100, probability[0]*100), use_container_width=True)
+
+        patient_vals = [trestbps, chol, thalach, age]
+        normal_vals = [120, 200, 150, 40]
+        labels = ['Blood Pressure', 'Cholesterol', 'Max Heart Rate', 'Age']
+        st.plotly_chart(create_bar_chart(patient_vals, labels, normal_vals, "Patient vs Normal Values"),
+                        use_container_width=True)
 
 # =================== PARKINSONS ===================
 elif disease == "Parkinsons":
     st.header("🧠 Parkinsons Prediction")
-    st.markdown("Enter patient voice measurement details below.")
-
     col1, col2, col3 = st.columns(3)
     with col1:
         MDVP_Fo = st.number_input("MDVP:Fo(Hz)", 0.0, 300.0)
@@ -180,16 +383,29 @@ elif disease == "Parkinsons":
         probability = parkinsons_model.predict_proba(input_scaled)[0]
         confidence = round(max(probability) * 100, 2)
 
-        if prediction[0] == 1:
-            st.markdown('<div class="result-box-danger">⚠️ HIGH RISK: The person HAS Parkinsons</div>', unsafe_allow_html=True)
-            st.error(f"🎯 Confidence: {confidence}%")
-            risk = "High" if confidence > 80 else "Medium"
-            st.markdown(f'<div class="tip-box">🚨 Risk Level: <b>{risk}</b><br><br>💡 Health Tips:<br>• Consult neurologist immediately<br>• Physical therapy recommended<br>• Medication management<br>• Support group assistance</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="result-box-success">✅ LOW RISK: The person does NOT have Parkinsons</div>', unsafe_allow_html=True)
-            st.success(f"🎯 Confidence: {confidence}%")
-            st.markdown('<div class="tip-box">✅ Risk Level: <b>Low</b><br><br>💡 Stay Healthy Tips:<br>• Regular brain exercises<br>• Stay physically active<br>• Healthy diet with antioxidants<br>• Regular neurological checkup</div>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            if prediction[0] == 1:
+                result = "Parkinsons Detected"
+                tips = ["Consult neurologist", "Physical therapy", "Medication management"]
+                st.markdown('<div class="result-box-danger">⚠️ Parkinsons Detected</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="tip-box">🚨 Risk: <b>High</b><br>{"<br>".join("• "+t for t in tips)}</div>',
+                            unsafe_allow_html=True)
+            else:
+                result = "No Parkinsons"
+                tips = ["Regular brain exercises", "Stay physically active", "Healthy diet"]
+                st.markdown('<div class="result-box-success">✅ No Parkinsons</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="tip-box">✅ Risk: <b>Low</b><br>{"<br>".join("• "+t for t in tips)}</div>',
+                            unsafe_allow_html=True)
+
+            pdf = generate_pdf("Parkinsons", result, confidence, tips)
+            st.download_button("📄 Download Report PDF", pdf, "parkinsons_report.pdf", "application/pdf")
+
+        with col2:
+            st.plotly_chart(create_gauge(confidence, "Confidence Score"), use_container_width=True)
+            st.plotly_chart(create_pie(probability[1]*100, probability[0]*100), use_container_width=True)
 
 # Footer
 st.markdown("---")
-st.markdown('<p style="text-align:center; color:#888;">Made with ❤️ | Multiple Disease Prediction System | ML Project</p>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center; color:#888;">Made with ❤️ | Multiple Disease Prediction System | ML Project</p>',
+            unsafe_allow_html=True)
